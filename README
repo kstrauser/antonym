@@ -11,3 +11,85 @@ easier. Antonym supports the following functions:
 * Calculating statistics about a given remailer chain
 
 It's released and distributable under the terms of the GPL.
+
+INSTALLATION
+
+  Copy 'antonym.pl' to a directory in your $PATH.
+
+  Get a .remailers file if you don't already have one.  An easy way to do
+  this is:
+
+    finger rlist@mixmaster.shinn.net > ~/.remailers
+
+  Create your configuration file, 'replyblocks.dat'.  See the included
+  'replyblocks.dat.example' for instructions.  This is probably the hardest
+  part of using antonym, but it's not really *that* difficult, and you only
+  have to do it when you're creating a new nym.  Hint: the 'phrase' and
+  'password' commands can be helpful when writing your new reply block.
+
+
+USAGE
+
+  antonym has quite a few commands and options.  You can get a list of these
+  by running antonym without any arguments.
+
+
+EXAMPLES
+
+  Creating a reply block:
+
+    $ antonym --alias mynewalias create > newreplyblock.txt
+
+  Decrypting a file that has been send to you:
+
+    $ antonym decrypt infile.txt outfile.txt
+
+  Reading a file that's been send to you, but without writing it out to a
+  file:
+
+    $ antonym decrypt infile.txt | less
+
+  Calculating typical reliability and latency of the chain of remailers in
+  your reply block:
+
+    $ antonym chainstat dizum cracker austria
+                        this hop           cumulative
+    ##  remailer    latency     prob    latency     prob
+    --  --------   --------  -------   --------  -------
+     1  dizum       0:04:37  100.00%    0:04:37  100.00%
+     2  cracker     1:02:13   95.11%    1:06:50   95.11%
+     3  austria     0:06:24   99.96%    1:13:14   95.07%
+
+    Probability of success: 95.07%
+    Expected latency      : 1:13:14
+
+  Encrypting an email you've written before sending it to your nymserver:
+
+    $ cat email.txt
+    From: mynewalias
+    Subject: Another test
+    To: kirk@strauser.com
+    Gcc: nnml:sent.mail
+    --text follows this line--
+    Thanks for antonym!
+
+    $ antonym nymcrypt email.txt
+
+
+TODO
+
+  Add support for:
+
+    Encrypting a file to a remailer
+    Verifying that reply blocks link to valid remailers
+    Retrieving remailer info (~/.remailers)
+    Generating random reply blocks
+    Editing encrypted files (i.e. with a pipe to vi)
+    Reading encrypted configuration files
+
+  Finish moving *all* PGP/GPG interaction into wrappers
+
+
+BUGS
+
+  GnuPG support isn't even close to working.

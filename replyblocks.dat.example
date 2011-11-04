@@ -1,0 +1,141 @@
+# -*- cperl -*-
+
+# $Id: replyblocks.dat.example,v 1.1 2002/07/25 04:27:27 kirk Exp $
+
+# NEWSGATE
+#
+# A hash of all of the mail2news gateways you might want to use.
+# Anything that lets you move email addresses out of your hop
+# definition blocks is probably a Good Thing, since it removes another
+# opportunity to make typos.
+#
+
+%newsgate =
+    (
+     'lcs' => 'mail2news@anon.lcs.mit.edu'
+    );
+
+
+# NYMSERVER
+#
+# A hash of information about each nymserver that you want to use.  As
+# with NEWSGATE, centralizing this information makes configuring the
+# rest of the system easier.
+
+%nymserver =
+    (
+     'alias_net' =>
+     {
+      'config' => 'config@nym.alias.net',
+      'send'   => 'send@nym.alias.net'
+     },
+
+     'xgnym2' =>
+     {
+      'config' => 'config@nym.xganon.com',
+      'send'   => 'send@nym.xganon.com'
+     },
+
+     'lexx' =>
+     {
+      'config' => 'config@lexx.shinn.net',
+      'send' => 'send@lexx.shinn.net'
+     },
+
+     'redneck' =>
+     {
+      'config' => 'config@redneck.gacracker.org',
+      'send'   => 'send@redneck.gacracker.org'
+     }
+    );
+
+
+# EVBLOCK:
+#
+# The `user' section defines the identifying information for the alias.
+#
+# Keys for the `user' section are:
+#
+#  id        - The alias name, i.e. sample
+#  full      - The full name of the alias, i.e. "Joe User"
+#  fprint    - The unique {p,}gp{,g} identifier for the lias
+#  nymserver - The identity of the pseudonym server to use
+#
+# The `hops' section is an array of hashes, each detailing one of the hops
+# that mail will pass through on its way back to the owner.
+#
+# Keys for the `hops' hashes are:
+#
+#  addr - The name of a remailer (as found in ~/.remailers), the name
+#         of a newsgate (as defined above), or an email address.
+#  pass - The passphrase that the remailer will use to encrypt the email.
+#  ltnt - Optional amount of time (HH:MM) to wait before the remailer
+#         forwards an email to the next hop.  Overrides the remailer's
+#         (random) latency.
+#  subj - If the remailer is a Usenet gateway, this will be the subject of
+#         the posting.
+#  ngrp - If the remailer is a Usenet gateway, this will be the newsgroup
+#         (or comma-separated list of newsgroups) that the email will be
+#         posted to.
+
+%evblock =
+    (
+     ######################################################################
+     #### Foo                                                          ####
+     ######################################################################
+
+     'foo' =>
+     {
+      'user' =>
+      { 'id'        => 'foo',
+	'full'      => 'Foo Bar',
+	'fprint'    => 'Foo Bar',
+        'nymserver' => 'alias_net' },
+
+      'hops' =>
+      [ { 'addr' => 'remailer@mixmaster.shinn.net',
+	  'pass' => 'crew89crweqjd43124v4vklxafd0sa',
+	  'ltnt' => '+0:00'
+	},
+	{ 'addr' => 'austria',
+	  'pass' => 'cfasd456v7r12njkcfawe789c45123',
+	  'ltnt' => '+0:00'
+	},
+	{ 'addr' => 'lcs',
+	  'pass' => 'c4517689f0wcadrq7890c4',
+	  'subj' => 'My Own Subject 1',
+	  'ngrp' => 'alt.anonymous.messages'
+	} ]
+     },
+
+
+     ######################################################################
+     #### Bar                                                          ####
+     ######################################################################
+
+     'bar' =>
+     {
+      'user' =>
+      { 'id'     => 'bar',
+	'full'   => 'Bar Baz',
+	'fprint' => 'Bar Baz' },
+
+
+      'hops' =>
+      [				# shinn
+       { 'addr' => 'remailer@mixmaster.shinn.net',
+	 'pass' => 'W0rdsm1th'
+	 #        'ltnt' => '+0:00'
+       },
+       { 'addr' => 'austria',
+	 'pass' => 'blaxpl017ation',
+	 #        'ltnt' => '+0:00'
+       },
+       { 'addr' => 'lcs',
+	 'pass' => 'w4nk3r',
+	 'subj' => 'My Own Subject 2',
+	 'ngrp' => 'alt.anonymous.messages'
+       }
+      ]
+     }
+    );
