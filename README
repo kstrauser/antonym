@@ -17,9 +17,9 @@ INSTALLATION
   Copy 'antonym.pl' to a directory in your $PATH.
 
   Get a .remailers file if you don't already have one.  An easy way to do
-  this is:
+  this is by asking Antonym to fetch one for you:
 
-    finger rlist@mixmaster.shinn.net > ~/.remailers
+    antonym update
 
   Create your configuration file, 'replyblocks.dat'.  See the included
   'replyblocks.dat.example' for instructions.  This is probably the hardest
@@ -38,7 +38,7 @@ EXAMPLES
 
   Creating a reply block:
 
-    $ antonym --alias mynewalias create > newreplyblock.txt
+    $ antonym create mynewalias > newreplyblock.txt
 
   Decrypting a file that has been send to you:
 
@@ -63,7 +63,8 @@ EXAMPLES
     Probability of success: 95.07%
     Expected latency      : 1:13:14
 
-  Encrypting an email you've written before sending it to your nymserver:
+  Encrypting an email you've written in Gnus before sending it to your
+  nymserver:
 
     $ cat email.txt
     From: mynewalias
@@ -73,7 +74,57 @@ EXAMPLES
     --text follows this line--
     Thanks for antonym!
 
-    $ antonym nymcrypt email.txt
+    $ antonym --mailinformat=gnus nymcrypt email.txt
+
+  Encrypting an email you've written, then passing it through several
+  remailers:
+
+    $ cat email.txt
+    From: mynewalias
+    Subject: Yet another test
+    To: kirk@strauser.com
+
+    This is wonderful!  I love antonym!
+
+    $ antonym nymcrypt | antonym remcrypt freedom austria | sendmail -t
+
+  Creating a reply block, encrypting it to several remailers, then sending
+  it:
+
+    $ antonym create mynewalias | antonym remcrypt aarg xganon2 dizum | sendmail -t
+
+  Validating your reply blocks:
+
+    $ ./antonym validate all
+
+    Alias: mynewalias
+    ----------------------------------------
+    Hop: havenco
+        Address: mix@remailer.havenco.com
+        A password is set.
+
+    Hop: aarg
+        Address: remailer@aarg.net
+        A password is set.
+
+    Hop: austria
+        Address: mixmaster@remailer.privacy.at
+        A password is set.
+
+    Hop: freedom
+        Address: remailer@freedom.gmsociety.org
+        A password is set.
+
+    Hop: xganon2
+        Address: remailer@remailer.xganon.com
+        A password is set.
+
+    Hop: lcs
+        Address: mail2news@anon.lcs.mit.edu
+        A password is set.
+
+    This replyblock seems valid.
+
 
 
 TODO
