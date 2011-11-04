@@ -1,6 +1,6 @@
 # -*- cperl -*-
 
-# $Id: replyblocks.dat.example,v 1.1 2002/07/25 04:27:27 kirk Exp $
+# $Id: replyblocks.dat.example 21 2004-02-11 03:06:06Z kirk $
 
 # NEWSGATE
 #
@@ -12,7 +12,9 @@
 
 %newsgate =
     (
-     'lcs' => 'mail2news@anon.lcs.mit.edu'
+     'lcs_news' => 'mail2news@anon.lcs.mit.edu',
+     'dizum_news' => 'mail2news@dizum.com',
+     'gmsociety_news' => 'mail2news@freedom.gmsociety.org',
     );
 
 
@@ -28,6 +30,12 @@
      {
       'config' => 'config@nym.alias.net',
       'send'   => 'send@nym.alias.net'
+     },
+
+     'hod' =>
+     {
+      'config' => 'config@hod.aarg.net',
+      'send'   => 'send@hod.aarg.net'
      },
 
      'xgnym2' =>

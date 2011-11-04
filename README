@@ -19,7 +19,7 @@ INSTALLATION
   Get a .remailers file if you don't already have one.  An easy way to do
   this is by asking Antonym to fetch one for you:
 
-    antonym update
+    antonym.pl update
 
   Create your configuration file, 'replyblocks.dat'.  See the included
   'replyblocks.dat.example' for instructions.  This is probably the hardest
@@ -30,29 +30,29 @@ INSTALLATION
 
 USAGE
 
-  antonym has quite a few commands and options.  You can get a list of these
-  by running antonym without any arguments.
+  antonym.pl has quite a few commands and options.  You can get a list of these
+  by running antonym.pl without any arguments.
 
 
 EXAMPLES
 
   Creating a reply block:
 
-    $ antonym create mynewalias > newreplyblock.txt
+    $ antonym.pl create mynewalias > newreplyblock.txt
 
   Decrypting a file that has been send to you:
 
-    $ antonym decrypt infile.txt outfile.txt
+    $ antonym.pl decrypt infile.txt outfile.txt
 
   Reading a file that's been send to you, but without writing it out to a
   file:
 
-    $ antonym decrypt infile.txt | less
+    $ antonym.pl decrypt infile.txt | less
 
   Calculating typical reliability and latency of the chain of remailers in
   your reply block:
 
-    $ antonym chainstat dizum cracker austria
+    $ antonym.pl chainstat dizum cracker austria
                         this hop           cumulative
     ##  remailer    latency     prob    latency     prob
     --  --------   --------  -------   --------  -------
@@ -74,7 +74,7 @@ EXAMPLES
     --text follows this line--
     Thanks for antonym!
 
-    $ antonym --mailinformat=gnus nymcrypt email.txt
+    $ antonym.pl --mailinformat=gnus nymcrypt email.txt
 
   Encrypting an email you've written, then passing it through several
   remailers:
@@ -86,16 +86,16 @@ EXAMPLES
 
     This is wonderful!  I love antonym!
 
-    $ antonym nymcrypt | antonym remcrypt freedom austria | sendmail -t
+    $ antonym.pl nymcrypt | antonym.pl remcrypt freedom austria | sendmail -t
 
   Creating a reply block, encrypting it to several remailers, then sending
   it:
 
-    $ antonym create mynewalias | antonym remcrypt aarg xganon2 dizum | sendmail -t
+    $ antonym.pl create mynewalias | antonym.pl remcrypt aarg xganon2 dizum | sendmail -t
 
   Validating your reply blocks:
 
-    $ ./antonym validate all
+    $ antonym.pl validate all
 
     Alias: mynewalias
     ----------------------------------------
@@ -145,12 +145,12 @@ BUGS
 AUTHORS
 
   Antonym was written by Kirk Strauser <kirk@strauser.com>.  It is available
-  from http://www.honeypot.net/~kirk/projects/antonym.html .
+  at https://github.com/kstrauser/antonym .
 
 
 COPYRIGHT
 
-  Copyright (C) 2002  Kirk Strauser
+  Copyright (C) 2004  Kirk Strauser
 
   This program is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published by the Free

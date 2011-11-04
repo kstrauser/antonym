@@ -1,7 +1,9 @@
 #!/usr/bin/perl -w
 
+# $Id: antonym 79 2004-05-03 18:20:33Z kirk $
+
 # Antonym - a Perl pseudonym management tool
-# Copyright (C) 2002  Kirk Strauser
+# Copyright (C) 2004  Kirk Strauser
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,22 +20,19 @@
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
 # 02111-1307, USA.
 
-# Also add information on how to contact you by electronic and paper
-# mail.
-
-# $Id: antonym,v 1.8 2002/08/06 16:35:04 kirk Exp $
+# The author may be contacted by email at kirk@strauser.com
 
 # TODO:
 #
 #   Add support for:
-#      Generating random reply blocks
 #      Editing encrypted files (i.e. with a pipe to vi)
 
 use strict;
-use Getopt::Long;
 use Digest::MD5;
 use FileHandle;
+use Getopt::Long;
 use IPC::Open2;
+use UNIVERSAL;
 
 ######################################################################
 #### Configuration                                                ####
@@ -44,11 +43,11 @@ my %opt_def = (
 	       'alias=s'         => '',
 	       'config=s'        => 'replyblocks.dat',
 	       'ctype=s'         => 'pgp',
-	       'dict=s'          => '/usr/share/dict/american-english',
+	       'dict=s'          => '/usr/share/dict/american-english-large',
 	       'remailers=s'     => "$ENV{'HOME'}/.remailers",
 	       'words=i'         => 5,
-	       'rlist=s'         => 'finger:rlist@mixmaster.shinn.net',
-	       'maxrlistage=i'   => 2,
+	       'rlist=s'         => 'http://mixmaster.shinn.net/stats/rlist',
+	       'maxrlistage=i'   => 1,
 	       'mailinformat=s'  => 'mbox',
 	       'mailoutformat=s' => 'mbox',
 	       'tmp=s'           => '/tmp',
@@ -65,6 +64,7 @@ my %handles = (
 			       'output' => 'either' },
 	       'create'   => { 'output' => 'either' },
 	       'modify'   => { 'output' => 'either' },
+	       'delete'   => { 'output' => 'either' },
 	       'remcrypt' => { 'input'  => 'stdin',
 			       'output' => 'stdout' }
 );
@@ -74,12 +74,16 @@ my %opt;
 ## Global variables
 my $block;
 my $command;
+my $doAction;
 my $inputfile;
 my $outputfile;
+my $inputfilename;
 my @hops;
 my %evblock;
+my %geninfo;
 my %nym;
 my %remailer;
+my %broken;
 my %newsgate;
 my %nymserver;
 
@@ -120,6 +124,7 @@ unless ($optsuccess)
     showUsageAndExit("Invalid options were specified");
 }
 
+$doAction = (($opt{'ctype'} eq 'gpg') ? \&gpgDoAction : \&pgpDoAction);
 
 #### Command handling
 
@@ -139,12 +144,32 @@ if ($command eq 'chainstat' or
     @ARGV = ();
 }
 
+if ($command eq 'makenym')
+{
+    showUsageAndExit("Too few creation parameters were specified") if @ARGV < 5;
+
+    %geninfo = ('id' => shift @ARGV,
+		'userid' => shift @ARGV,
+		'nymserver' => shift @ARGV,
+		'ngate'     => shift @ARGV);
+
+    @hops = @ARGV;
+    @ARGV = ();
+}
+
 if ($command eq 'create' or
     $command eq 'modify' or
+    $command eq 'delete' or
     $command eq 'validate')
 {
     showUsageAndExit("No alias was specified") if @ARGV < 1;
     $opt{'alias'} = shift @ARGV;
+}
+
+if ($command eq 'edit')
+{
+    showUsageAndExit("No filename was specified") if @ARGV < 1;
+    $inputfilename = shift @ARGV;
 }
 
 # Bind the filehandles needed by each command
@@ -188,7 +213,7 @@ parseRemailers();
 #### Parse the configuration blocks                               ####
 ######################################################################
 
-open INFILE, $opt{'config'} or exitWithError("Couldn't open the alias block file: $!");
+open INFILE, $opt{'config'} or exitWithError("Couldn't open the configuration file $opt{'config'}: $!");
 $block = '';
 while (defined ($_ = <INFILE>))
 {
@@ -198,18 +223,46 @@ close INFILE;
 
 if ($opt{'config'} =~ /\.pgp$/)
 {
-    $block = pgpDoAction('action'  => 'decrypt',
-			 'message' => $block);
+    $block = &$doAction('action'  => 'decrypt',
+			'message' => $block);
 }
 
-eval ($block) or exitWithError("Unable to evaluate the configuration file.");
+eval $block;
+exitWithError("Unable to evaluate the configuration file $opt{'config'}:\n$@") if $@;
+
+# Expand random-chain clauses
+my @temp = @hops;
+@hops = ();
+foreach my $hop (@temp)
+{
+    # Random chain?
+    if ($hop =~ /^\d+(\[\d*\.?\d*\])?$/)
+    {
+	my $threshold = 100;
+	my $length = $hop;
+	if ($hop =~ /\[/)
+	{
+	    $hop =~ /(\d+)\[(.*)\]/;
+	    $length = $1;
+	    $threshold = $2;
+	}
+	push @hops, mkRandChain($length, $threshold);
+    }
+    # Hop name
+    else
+    {
+	push @hops, $hop;
+    }
+}
+@temp = ();
 
 # These commands all use the same configuration information, so
 # calculate it once.
 
 if ($command eq 'create' or
     $command eq 'decrypt' or
-    $command eq 'modify')
+    $command eq 'modify' or
+    $command eq 'delete')
 {
     # The 'decrypt' operation is slightly different from 'create' or
     # 'modify' in that the appropriate alias is determined from the
@@ -279,6 +332,7 @@ if ($command eq 'chainstat')
     my $prob = 1.0;
     my $latency = 0;
     my $count = 0;
+    my $lasthop = '';
 
     print <<__EOHD__;
                     this hop           cumulative
@@ -295,18 +349,28 @@ __EOHD__
 	$count++;
 	my $hopprob = $remailer{$hop}{'uptime'};
 	$hopprob =~ s/\%$//;
+	$hopprob = 0 if ($broken{"$lasthop:$hop"} || $broken{"*:$hop"});
 	$prob = $prob * $hopprob / 100.0;
 	my $hoplatency = $remailer{$hop}{'latency'};
+	$hoplatency = "0:$hoplatency" if ($hoplatency =~ /^\d+:\d+$/);
 	my ($hours, $minutes, $seconds) = (split /:/, $hoplatency);
 	$latency += $hours * 3600 + $minutes * 60 + $seconds;
 
-	printf "%2d  %-8s  %9s  %6.2f%%  %9s  %6.2f%%\n",
+	if ($hopprob > 0) {
+	    $hopprob = sprintf('%6.2f%%', $hopprob);
+	} else {
+	    $hopprob = 'BROKEN!';
+	}
+
+	printf "%2d  %-8s  %9s  %s  %9s  %6.2f%%\n",
 	    $count,
 	    $hop,
             $hoplatency,
             $hopprob,
             formatTime($latency),
             $prob * 100;
+
+	$lasthop = $hop;
     }
 
     print "\n";
@@ -329,15 +393,15 @@ if ($command eq 'decrypt')
 
     while (defined (my $current = pop @hops))
     {
-	$message = pgpDoAction('action'  => 'decrypt',
-			       'pass'    => $$current{'pass'},
-			       'message' => $message);
+	my $pass = $$current{'pass'};
+
+	$message = &$doAction('action'  => 'decrypt',
+			      'pass'    => $pass,
+			      'message' => $message) if defined $pass;
     }
 
-    delete $ENV{'PGPPASSFD'};
-
-    $message = pgpDoAction('action'  => 'decrypt',
-			   'message' => $message);
+    $message = &$doAction('action'  => 'decrypt',
+			  'message' => $message);
 
     select $outputfile;
     print $message;
@@ -349,13 +413,95 @@ if ($command eq 'decrypt')
 
 
 ############################################################
+#### Edit an encrypted file                             ####
+############################################################
+
+## This doesn't work correctly.  It's not a documented feature for
+## good reason.
+
+if ($command eq 'edit')
+{
+    my $tempname = "$opt{'tmp'}/" . mkRandString();
+    my $message;
+
+    if (system "mknod -m 700 $tempname p" and
+	system "mkfifo -m 700 $tempname")
+    {
+	exitWithError("Unable to create a named pipe \"$tempname\"");
+    }
+
+    unless (open INFILE, $inputfilename)
+    {
+	my $error = $!;
+	unlink $tempname;
+	exitWithError("Unable to read the input file: $error");
+    }
+
+    $message .= $_ while defined ($_ = <INFILE>);
+    close INFILE;
+
+    $message = &$doAction('action'  => 'decrypt',
+			  'message' => $message);
+
+#     my $pid;
+#     unless (defined ($pid = fork()))
+#     {
+# 	unlink $tempname;
+# 	exitWithError("Unable to fork");
+#     }
+
+#     if ($pid)
+#     {
+    if (fork())
+    {
+	print "Opening the pipe\n";
+	unless (open OUTPIPE, "> $tempname")
+	{
+	    my $error = $_;
+	    unlink $tempname;
+	    exitWithError("Unable to write to the named pipe: $error");
+	}
+	print "Writing to the pipe\n";
+	print OUTPIPE "$message\n\n";
+	close OUTPIPE;
+	# $pid = waitpid $pid, 0;
+	my $pid = wait;
+	if ($pid == -1)
+	{
+	    unlink $tempname;
+	    exitWithError("Something strange happened to our child");
+	}
+    }
+    else
+    {
+	print "Editing $tempname\n";
+	exec "vi $tempname" or die "Unable to exec: $!";
+    }
+
+    unless (open INPIPE, $tempname)
+    {
+	my $error = $_;
+	unlink $tempname;
+	exitWithError("Unable to read the named pipe: $!");
+    }
+    $message = '';
+    $message .= $_ while defined ($_ = <INPIPE>);
+    close INPIPE;
+    print "Final output: $message\n";
+
+    unlink $tempname or exitWithError("Couldn't delete the named pipe: $!");
+
+    exit;
+}
+
+
+############################################################
 #### Create and modify                                  ####
 ############################################################
 
-
 if ($command eq 'create' or $command eq 'modify')
 {
-    my $public_key = getPubKey($nym{'fprint'});
+    my $public_key = getPubKey($nym{'userid'});
 
     # Initialize the block-building algorithm
     my $next = pop @hops;
@@ -381,18 +527,13 @@ __EOHD__
 	}
 	debug("Building the block $$current{'addr'} -> $$next{'addr'}");
 	debug("Encrypting to $$current{'addr'}...");
-	$message = pgpDoAction('message' => $message,
-			       'action'  => 'encrypt_to',
-			       'to'      => $destination);
-	$message = <<__EOHEADER__;
-::
-Encrypted: PGP
+	$message = &$doAction('message' => $message,
+			      'action'  => 'encrypt_to',
+			      'to'      => $destination);
 
-$message
-**
-__EOHEADER__
+        $message = mkHeader($current) . "::\nEncrypted: PGP\n\n$message\n";
+	$message .= "**\n" if defined $$current{'pass'};
 
-        $message = mkHeader($current) . $message;
 	$next = $current;
 
     debug(<<__EOHD__);
@@ -407,32 +548,16 @@ __EOHD__
 
     }
 
-    foreach $_ ($command)
-    {
-	/^create$/ and do {
-	    # Build a creation request
-	    $message = <<__EOCREATEREQ__;
+    # Build a conditional creation request ("create?" works as modify if signed)
+    $message = <<__EOCREATEREQ__;
 Config:
 From: $nym{'id'}
-Nym-Commands: create +acksend +fingerkey name="$nym{'full'}"
+Nym-Commands: create? +acksend +fingerkey name="$nym{'full'}"
 Public-Key:
 $public_key
 Reply-Block:
 $message
 __EOCREATEREQ__
-            last;
-	};
-	/^modify$/ and do {
-	    # Build a change request
-	    $message = <<__EOCREATEREQ__;
-Config:
-From: $nym{'id'}
-Reply-Block:
-$message
-__EOCREATEREQ__
-            last;
-	};
-    }
 
     # Dump the penultimate message buffer to the screen for examination
     debug("FINAL ==================");
@@ -442,10 +567,44 @@ __EOCREATEREQ__
     # Given the final message, encrypt it to the appropriate remailer.
     # Now the creation request is all ready for mailing!
     debug("Signing and encrypting the creation request...");
-    $message = pgpDoAction('message' => $message,
-			   'action'  => 'encrypt_sign_to',
-			   'to'      => $nymserver{$nym{'nymserver'}}{'config'},
-			   'from'    => $nym{'fprint'});
+    $message = &$doAction('message' => $message,
+			  'action'  => 'encrypt_sign_to',
+			  'to'      => $nymserver{$nym{'nymserver'}}{'config'},
+			  'from'    => $nym{'userid'});
+
+    select $outputfile;
+    print writeMailFile('recipient' => $nymserver{$nym{'nymserver'}}{'config'},
+			'message'   => $message,
+			'format'    => $opt{'mailoutformat'});
+    exit;
+}
+
+
+############################################################
+#### Delete                                             ####
+############################################################
+
+if ($command eq 'delete')
+{
+    # Build a delete request
+    my $message = <<__EOCREATEREQ__;
+Config:
+From: $nym{'id'}
+Nym-Commands: delete
+__EOCREATEREQ__
+
+    # Dump the penultimate message buffer to the screen for examination
+    debug("FINAL ==================");
+    debug($message);
+    debug("FINAL ==================");
+
+    # Given the final message, encrypt it to the appropriate remailer.
+    # Now the creation request is all ready for mailing!
+    debug("Signing and encrypting the creation request...");
+    $message = &$doAction('message' => $message,
+			  'action'  => 'encrypt_sign_to',
+			  'to'      => $nymserver{$nym{'nymserver'}}{'config'},
+			  'from'    => $nym{'userid'});
 
     select $outputfile;
     print writeMailFile('recipient' => $nymserver{$nym{'nymserver'}}{'config'},
@@ -472,37 +631,138 @@ if ($command eq 'password')
 
 if ($command eq 'phrase')
 {
-    # This algorithm courtesy of the Perl Cookbook
-    open INFILE, $opt{'dict'} or exitWithError("Unable to read the dictionary file: $!");
-    1 while <INFILE>;
-    my $count = $.;
-    close INFILE;
+    print mkRandPhrase($opt{'words'}) . "\n";
+    exit;
+}
 
-    my %list;
-    for (my $i = 0; $i < $opt{'words'}; $i++)
-    {
-	$list{$i}{'number'} = int (rand $count);
-    }
 
-    open INFILE, $opt{'dict'} or exitWithError("Unable to read the dictionary file: $!");
-    foreach my $index (sort { $list{$a}{'number'} <=> $list{$b}{'number'} } (keys %list))
-    {
-	while ($. < $list{$index}{'number'})
-	{
-	    $_ = <INFILE>;
-	}
-	chomp;
-	$list{$index}{'word'} = $_;
-    }
-    close INFILE;
+############################################################
+#### List remailing services                            ####
+############################################################
 
-    $list{0}{'word'} = capitalize($list{0}{'word'});
-
-    foreach my $index (sort {$a <=> $b} (keys %list))
-    {
-	print "$list{$index}{'word'} ";
-    }
+if ($command eq 'list')
+{
+    print "Remailers\n";
+    print "############################################################\n";
     print "\n";
+
+    foreach my $name (sort { $remailer{$a}{'index'} <=> $remailer{$b}{'index'} } (keys %remailer))
+    {
+	print <<__EOHD__;
+$name:
+    Address: $remailer{$name}{'address'}
+    Index  : $remailer{$name}{'index'}
+    Uptime : $remailer{$name}{'uptime'}
+    Latency: $remailer{$name}{'latency'}
+__EOHD__
+
+	print "    Caps   : " . join (', ', (sort keys %{$remailer{$name}{'caps'}})) . "\n";
+	print "\n";
+    }
+
+    print "\n";
+    print "mail2news gateways\n";
+    print "############################################################\n";
+    print "\n";
+
+    foreach my $name (sort (keys %newsgate))
+    {
+	print "$name\n";
+	print "    $newsgate{$name}\n";
+	print "\n";
+    }
+
+    print "\n";
+    print "Nymservers\n";
+    print "############################################################\n";
+    print "\n";
+
+    foreach my $name (sort (keys %nymserver))
+    {
+	print "$name\n";
+    }
+
+    exit;
+}
+
+
+############################################################
+#### Generate a new nym                                 ####
+############################################################
+
+if ($command eq 'makenym')
+{
+    # Get the nym's "full" component from the PGP key
+    foreach $_ (split "\n", &$doAction('action' => 'getkeyinfo',
+				       'userid' => $geninfo{'userid'}))
+    {
+	next unless /^pub/;
+	$geninfo{'fullname'} = (split /\s+/, $_, 4)[3];
+	$geninfo{'fullname'} =~ s/\s+\<.*$//;
+	last;
+    }
+
+    my $lasthop = $geninfo{'ngate'};
+
+    unless (defined $newsgate{$lasthop})
+    {
+	# Maybe it's a remailer or direct e-mail address.
+	exitWithError("$geninfo{'ngate'} is not a known newsgate or remailer, or e-mail address.")
+	    unless ($lasthop = resolveAddr($lasthop));
+    }
+
+    push @hops, $lasthop;
+    my @varhops;
+
+    foreach my $name (@hops)
+    {
+	my %this;
+
+	# Split newsgate:newsgroup hops
+	my $group = 'alt.anonymous.messages';
+	if ($name =~ /:/)
+	{
+	    ($name, $group) = (split /:/, $name);
+	}
+
+	# Verify the existence of the named hop
+	unless (resolveAddr($name))
+	{
+	    exitWithError("Unknown recipient: $name");
+	}
+
+	$this{'addr'} = $name;
+	$this{'pass'} = mkRandString();
+
+	# Define newsgroups and subject if this hop is a newsgate
+	if (defined $newsgate{$name})
+	{
+	    $this{'subj'} = mkRandPhrase($opt{'words'});
+	    $this{'ngrp'} = $group;
+	}
+
+	push(@varhops, \%this);
+    }
+
+    require Data::Dumper;
+
+    my $dumper = new Data::Dumper([
+	{
+	    'user' =>
+	    {
+		'id'		=> $geninfo{'id'},
+	  	'full'		=> $geninfo{'fullname'},
+		'userid'	=> $geninfo{'userid'},
+		'nymserver'	=> $geninfo{'nymserver'},
+	    },
+	    'hops' => [ @varhops ]
+	}
+    ], [ "\$evblock{$geninfo{'id'}}" ]);
+
+    $dumper->Indent(1);
+    $dumper->Sortkeys(1) if UNIVERSAL::can($dumper, 'Sortkeys');
+
+    print $dumper->Dump;
     exit;
 }
 
@@ -541,7 +801,8 @@ if ($command eq 'nymcrypt')
     }
 
     # Check that no more than one recipient is defined
-    if ($maildata{'recipient'} ne '' and $maildata{'newsgroups'} ne '')
+    if (defined $maildata{'recipient'} and $maildata{'recipient'} ne '' and
+	defined $maildata{'newsgroups'} and $maildata{'newsgroups'} ne '')
     {
 	exitWithError("Only an email address *or* a list of newsgroups may be specified.");
     }
@@ -584,10 +845,10 @@ if ($command eq 'nymcrypt')
     debug("####################\n$buffer\n####################");
 
     ## Encrypt the message
-    $maildata{'message'} = pgpDoAction('message' => $buffer,
-				       'action'  => 'encrypt_sign_to',
-				       'to'      => $nymserver{$nym{'nymserver'}}{'send'},
-				       'from'    => $nym{'fprint'});
+    $maildata{'message'} = &$doAction('message' => $buffer,
+				      'action'  => 'encrypt_sign_to',
+				      'to'      => $nymserver{$nym{'nymserver'}}{'send'},
+				      'from'    => $nym{'userid'});
 
     my $subject = mkRandString();
 
@@ -596,56 +857,6 @@ if ($command eq 'nymcrypt')
 			'subject'   => $subject,
 			'message'   => $maildata{'message'},
 			'format'    => $opt{'mailoutformat'});
-    exit;
-}
-
-
-############################################################
-#### List remailing services                            ####
-############################################################
-
-if ($command eq 'list')
-{
-    print "Remailers\n";
-    print "############################################################\n";
-    print "\n";
-
-    foreach my $name (sort { $remailer{$a}{'index'} <=> $remailer{$b}{'index'} } (keys %remailer))
-    {
-	print <<__EOHD__;
-$name:
-    Address: $remailer{$name}{'address'}
-    Index  : $remailer{$name}{'index'}
-    Uptime : $remailer{$name}{'uptime'}
-    Latency: $remailer{$name}{'latency'}
-__EOHD__
-
-	print "    Caps   : " . join (', ', (keys %{$remailer{$name}{'caps'}})) . "\n";
-	print "\n";
-    }
-
-    print "\n";
-    print "mail2news gateways\n";
-    print "############################################################\n";
-    print "\n";
-
-    foreach my $name (sort (keys %newsgate))
-    {
-	print "$name\n";
-	print "    $newsgate{$name}\n";
-	print "\n";
-    }
-
-    print "\n";
-    print "Nymservers\n";
-    print "############################################################\n";
-    print "\n";
-
-    foreach my $name (sort (keys %nymserver))
-    {
-	print "$name\n";
-    }
-
     exit;
 }
 
@@ -680,7 +891,7 @@ if ($command eq 'remcrypt')
     # Copy *only* the parameters we want from %parsedinfo to %maildata
     foreach my $key ('newsgroups', 'subject', 'cc', 'refs')
     {
-	if ($parsedinfo{$key} ne '')
+	if (defined $parsedinfo{$key} and $parsedinfo{$key} ne '')
 	{
 	    $maildata{'headers'}{$key} = $parsedinfo{$key};
 	}
@@ -715,9 +926,9 @@ __EOHD__
 	{
 	    exitWithError("Unknown remailer: $hop");
 	}
-	$message = pgpDoAction('message' => $message,
-			       'action'  => 'encrypt_to',
-			       'to'      => $destination);
+	$message = &$doAction('message' => $message,
+			      'action'  => 'encrypt_to',
+			      'to'      => $destination);
 
 	if (@hops)
 	{
@@ -785,6 +996,12 @@ if ($command eq 'validate')
 
     foreach $alias (@aliases)
     {
+	unless (defined $evblock{$alias})
+	{
+	    print "Alias \"$alias\" does not exist.\n\n";
+	    next;
+	}
+
 	my @hops = @{$evblock{$alias}{'hops'}};
 	my $fatal = 0;
 	my $warn = 0;
@@ -859,7 +1076,7 @@ sub getPubKey
     # Extract the public key for later use
     if ($opt{'ctype'} eq 'gpg')
     {
-	open INPIPE, "gpg -at --export '$fingerprint' |" or exitWithError("Unable to open the key export pipe: $!");
+	open INPIPE, "gpg -at --openpgp --export '$fingerprint' |" or exitWithError("Unable to open the key export pipe: $!");
     }
     elsif ($opt{'ctype'} eq 'pgp')
     {
@@ -890,38 +1107,113 @@ sub getPubKey
     return $pk;
 }
 
-## GPG version of _do_action
+## GPG version of $doAction
 sub gpgDoAction
 {
-    my $message = shift;
-    my $target = shift;
-    my $action = shift || '--batch --encrypt';
-    my $rnd_filename = "$opt{'temp'}/antonym-temp-file";
+    my %params = @_;
     my $retval = '';
+    my $gpg_opts;
+    my $use_tmpfile = 0;
 
-    # Write out the message buffer to a gpg encryption pipe
-    #    my $gpg_syscmd = "gpg -at -r $target -u $nym{'fprint'} --output $rnd_filename --openpgp --comment '' $action";
-    my $gpg_syscmd = "gpg -at -r $target -u $nym{'fprint'} --output $rnd_filename --comment '' $action";
-    debug("\$gpg_syscmd: $gpg_syscmd");
-    open OUTPIPE, "| $gpg_syscmd" or exitWithError("Unable to open the output pipe: $!");
-    print OUTPIPE $message;
-    close OUTPIPE;
-
-    # Slurp the output of the gpg command
-    open INFILE, $rnd_filename or exitWithError("Unable to open the input file: $!");
-    while (defined ($_ = <INFILE>))
+    if ($params{'action'} eq 'encrypt_to')
     {
-	$retval .= $_;
+	$gpg_opts = "--pgp2 -r '$params{'to'}' -eat";
+	$use_tmpfile = 1;
     }
-    close INFILE;
+    elsif ($params{'action'} eq 'encrypt_sign_to')
+    {
+	$gpg_opts = "--openpgp -u '$params{'from'}' -r '$params{'to'}' -seat";
+    }
+    elsif ($params{'action'} eq 'decrypt')
+    {
+	$gpg_opts = "-d";
+    }
+    elsif ($params{'action'} eq 'getkeyinfo')
+    {
+	$gpg_opts = "--list-keys '$params{'userid'}'";
+    }
+    else
+    {
+	exitWithError("Unknown pgp action: $params{'action'}");
+    }
 
-    # Unlink the temp file or complain loudly!
-    unlink $rnd_filename or exitWithError("Unable to remove the temporary file: $!\n");
+    # Tell gpg to accept the password from STDIN if one is given
+    if (defined ($params{'pass'}))
+    {
+	$gpg_opts = "--passphrase-fd 0 $gpg_opts";
+    }
+
+    $gpg_opts = "-q --always-trust $gpg_opts";
+
+    if ($opt{'debug'})
+    {
+	my $out = "\n########################################\ngpgDoAction:\n";
+	foreach my $key (keys %params)
+	{
+	    next if $key eq 'message';
+	    $out .= "    $key: $params{$key}\n";
+	}
+	$out .= "    Command line: gpg $gpg_opts\n";
+	$out .= "Message:\nvvvvvvvvvvvvvvvvvvvv\n$params{'message'}^^^^^^^^^^^^^^^^^^^^\n";
+	$out .= "########################################\n";
+	debug($out);
+    }
+
+    my $tmpfile_in;
+    my $tmpfile_out;
+
+    eval {
+	my $pid;
+
+	if ($use_tmpfile) {
+	    # By design or flagrant bug?  You make the call.
+	    # In --pgp2 mode, gnupg doesn't write the output data
+	    # correctly if a pipe is used.  Probably because of lack
+	    # of ability to *seek() the file, but that's no reason to
+	    # be boneheaded about it....
+
+	    $tmpfile_in = "/tmp/gpg.in.".rand;
+	    $tmpfile_out = "/tmp/gpg.out.".rand;
+
+	    open(O, ">$tmpfile_in") || die "$tmpfile_in: $!";
+	    print O $params{'message'};
+	    close(O);
+
+	    (system("gpg $gpg_opts -o $tmpfile_out $tmpfile_in") / 256)
+		&& die "gpg exec failed; aborting\n";
+
+	    open(I, "<$tmpfile_out") || die "$tmpfile_out: $!";
+	    $retval .= $_ while (defined ($_ = <I>));
+	    close I;
+	} else {
+	    $pid = open2(\*INPIPE, \*OUTPIPE, "gpg $gpg_opts");
+
+	    if (defined ($params{'pass'})) {
+		print OUTPIPE "$params{'pass'}\n";
+	    }
+	    if (defined ($params{'message'})) {
+		print OUTPIPE $params{'message'};
+	    }
+
+	    # Closing this handle will force GPG to process the data
+	    close OUTPIPE;
+
+	    $retval .= $_ while (defined ($_ = <INPIPE>));
+	    close INPIPE;
+
+	    die "gpg exec failed; aborting\n" unless (waitpid($pid, 0));
+	}
+    };
+
+    unlink $tmpfile_in if defined $tmpfile_in;
+    unlink $tmpfile_out if defined $tmpfile_out;
+    die $@ if $@;
+    debug("Leaving gpgDoAction");
 
     return $retval;
 }
 
-## PGP version of _do_action
+## PGP version of $doAction
 sub pgpDoAction
 {
     my %params = @_;
@@ -939,6 +1231,10 @@ sub pgpDoAction
     elsif ($params{'action'} eq 'decrypt')
     {
 	$pgp_syscmd = "pgp -f";
+    }
+    elsif ($params{'action'} eq 'getkeyinfo')
+    {
+	$pgp_syscmd = "pgp -kv '$params{'userid'}'";
     }
     else
     {
@@ -986,6 +1282,7 @@ sub pgpDoAction
 	delete $ENV{'PGPPASSFD'};
     }
 
+    die "pgp exec failed; aborting\n" unless (waitpid($pid, 0) == $pid && !$?);
     debug("Leaving pgpDoAction");
 
     return $retval;
@@ -1000,9 +1297,83 @@ sub mkRandString
     {
 	$digest->add(rand);
     }
-    return $digest->hexdigest;
+    return $digest->b64digest;
 }
 
+## Generate a somewhat random phrase
+sub mkRandPhrase
+{
+    my $length = shift;
+    my $retval;
+
+    # This algorithm courtesy of the Perl Cookbook
+    open INFILE, $opt{'dict'} or exitWithError("Unable to read the dictionary file $opt{'dict'}: $!");
+    1 while <INFILE>;
+    my $count = $.;
+    close INFILE;
+
+    my %list;
+    for (my $i = 0; $i < $length; $i++)
+    {
+	$list{$i}{'number'} = int (rand $count);
+    }
+
+    open INFILE, $opt{'dict'} or exitWithError("Unable to read the dictionary file $opt{'dict'}: $!");
+    foreach my $index (sort { $list{$a}{'number'} <=> $list{$b}{'number'} } (keys %list))
+    {
+	while ($. < $list{$index}{'number'})
+	{
+	    $_ = <INFILE>;
+	}
+	chomp;
+	$list{$index}{'word'} = $_;
+    }
+    close INFILE;
+
+    $list{0}{'word'} = capitalize($list{0}{'word'});
+
+    foreach my $index (sort {$a <=> $b} (keys %list))
+    {
+	if (defined $retval)
+	{
+	    $retval .= ' ';
+	}
+	$retval .= $list{$index}{'word'};
+    }
+    return $retval;
+}
+
+sub mkRandChain
+{
+    my $length = shift;
+    my $threshold = shift || 100;
+    my @chain;
+    my %candidate;
+
+    foreach my $name (keys %remailer)
+    {
+	my $uptime = $remailer{$name}{'uptime'};
+	$uptime =~ s/\%$//;
+	if ($uptime >= $threshold)
+	{
+	    $candidate{$name} = rand;
+	}
+    }
+    if ($length > scalar(keys %candidate))
+    {
+	exitWithError(sprintf "The specified chain length, %d, was greater than the number of candidates, %d.",
+		      $length,
+		      scalar (keys %candidate));
+    }
+    my $i = 1;
+    foreach my $name (sort { $candidate{$a} <=> $candidate{$b} } keys %candidate)
+    {
+	push @chain, $name;
+	$i++;
+	last if $i > $length;
+    }
+    return @chain;
+}
 
 ########################################
 # Misc. message processing             #
@@ -1026,20 +1397,17 @@ __EOHEADER__
 
     $message .= "Latent-Time: $$dest{'ltnt'}\n" if $$dest{'ltnt'};
 
-    $message .= <<__EOHEADER__;
-Encrypt-Key: $$dest{'pass'}
+    my $algo = $$dest{'algo'};
+    $algo = 'Key' if (!defined $algo || $algo eq 'IDEA');
+    $message .= "Encrypt-$algo: $$dest{'pass'}\n" if $$dest{'pass'};
 
-__EOHEADER__
+    $message .= "\n";
 
-    if (defined $$dest{'subj'})	# Is this a Usenet gateway?
-    {
-	$message .= <<__EOUSENET__;
-##
-Subject: $$dest{'subj'}
-Newsgroups: $$dest{'ngrp'}
+    my $headers = '';
+    $headers .= "Newsgroups: $$dest{'ngrp'}\n" if (defined $$dest{'ngrp'});
+    $headers .= "Subject: $$dest{'subj'}\n" if (defined $$dest{'subj'});
 
-__EOUSENET__
-    }
+    $message .= "##\n$headers\n" if length($headers) > 0;
 
     return $message;
 }
@@ -1089,6 +1457,7 @@ sub parseRemailers
     if (not -e $opt{'remailers'} or
 	 time - (stat $opt{'remailers'})[9] > $opt{'maxrlistage'} * 86400)
     {
+	print STDERR "$0: warning: $opt{'remailers'} missing or too old; re-fetching\n";
 	updateRemailers();
     }
 
@@ -1097,6 +1466,21 @@ sub parseRemailers
     {
 	chomp $inline;
 	next if $inline eq '';
+
+	if ($inline =~ /^Broken type-I remailer chains:/) {
+	    # Cache the broken links for "chainstat" command.
+
+	    while (defined ($inline = <INFILE>)) {
+		chomp $inline;
+		last if $inline eq '';
+
+		if ($inline =~ /^\(([^ ]+) ([^ ]+)\)$/) {
+		    $broken{"$1:$2"} = 1;
+		}
+	    }
+
+	    next;
+	}
 
 	# Handle remailer capability lines
 	if ($inline =~ /^\$remailer/)
@@ -1115,7 +1499,7 @@ sub parseRemailers
 	}
 
 	my ($name) = (split /\s+/, $inline)[0];
-	next unless defined $remailer{$name};
+	next unless (defined $name && defined $remailer{$name});
 
 	$index++;
 	my ($address, $latency, $uptime);
@@ -1133,10 +1517,11 @@ sub parseRemailers
 	$remailer{$name}{'index'} = $index;
     }
 
-    # Finally, remove all remailers that don't offer cpunk services.
+    # Finally, remove all remailers that don't offer cpunk services or are missing information
     foreach my $name (keys %remailer)
     {
-	delete $remailer{$name} unless defined $remailer{$name}{'caps'}{'cpunk'};
+	delete $remailer{$name} unless (defined $remailer{$name}{'caps'}{'cpunk'}
+					and defined $remailer{$name}{'latency'});
     }
 }
 
@@ -1178,12 +1563,11 @@ sub showUsageAndExit
     }
 
     print <<__EOHELP__;
-Usage: $0 command [arguments]
+Usage: $0 COMMAND [arguments]
 
-Where alias is the name of the nym you wish to process, and command is one
-of
+COMMANDS
 
-    chainstat hop1 [hop2]...
+    chainstat CHAIN
               Calculate the probably latency and reliability of a chain of
               named remailers.
 
@@ -1193,11 +1577,17 @@ of
     modify alias [filename]
              Create a modification request block.
 
+    delete alias [filename]
+             Create a deletion request block.
+
     decrypt [input file] [output file]
               Decrypt the input data with the appropriate sequence.
 
     list      Get a list of defined remailers, mail2news gateways, and
               nymservers.
+
+    makenym alias userid nymserver newsgate CHAIN
+    makenym alias userid nymserver email CHAIN
 
     nymcrypt [input file] [output file]
               Encrypt a file (in email format) for delivery to the
@@ -1207,7 +1597,7 @@ of
 
     phrase    Generate a string of random words.
 
-    remcrypt hop1 [hop2]...
+    remcrypt CHAIN
               Accept an email message on STDIN and encrypt it for delivery for
               each of the listed hops in turn.  Output is to STDOUT.
 
@@ -1217,7 +1607,8 @@ of
               Verify the that all of the hops in an alias' reply block are
               defined.
 
-Options:
+
+OPTIONS
 
     --alias   Identity of the alias to operate on.  This is mainly
               needed for the "decrypt" and "nymcrypt" commands, which
@@ -1261,8 +1652,13 @@ Options:
     --words   Length (in words) of the string generated with the "phrase" command.
               (Default: $opt_def{'words=i'})
 
+
+CHAINS
+
+    hop1 hop2 n[m]
+
 __EOHELP__
-    exit;
+    exit 1;
 }
 
 
@@ -1289,7 +1685,7 @@ sub exitWithError
 {
     $_ = shift;
     print STDERR "ERROR: $_\n";
-    exit;
+    exit 1;
 }
 
 ## Print a warning, but continue
@@ -1437,10 +1833,38 @@ sub readMailFile
 sub updateRemailers
 {
     debug("Fetching remailer keys");
-    my ($method, $source) = (split /\:/, $opt{'rlist'})[0, 1];
+    my ($method, $source) = (split /\:\/\//, $opt{'rlist'})[0, 1];
     if ($method eq 'finger')
     {
 	system "finger $source > $opt{'remailers'}";
+    }
+    if ($method eq 'http' || $method eq 'ftp')
+    {
+	my $ok = 0;
+	# Find a fetch command
+	foreach my $path (split /:/, $ENV{'PATH'})
+	{
+	    if (-e "$path/wget")
+	    {
+		system "$path/wget -q $opt{'rlist'} -O $opt{'remailers'}";
+		$ok = 1;
+		last;
+	    }
+	    if (-e "$path/curl")
+	    {
+		system "$path/curl $opt{'rlist'} > $opt{'remailers'}";
+		$ok = 1;
+		last;
+	    }
+	}
+	unless ($ok)
+	{
+	    print "Unable to find wget or curl anywhere in the search path.\n";
+	    exit -1;
+	}
+
+	# update timestamp
+	system("touch $opt{'remailers'}");
     }
 }
 
