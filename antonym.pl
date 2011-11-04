@@ -21,18 +21,16 @@
 # Also add information on how to contact you by electronic and paper
 # mail.
 
-# $Id: antonym,v 1.6 2002/07/25 16:13:46 kirk Exp $
+# $Id: antonym,v 1.7 2002/07/30 03:01:22 kirk Exp $
 
 # TODO:
 #
 #   Add support for:
 #      Encrypting a file to a remailer
 #      Verifying that reply blocks link to valid remailers
-#      Retrieving remailer info (~/.remailers)
 #      Generating random reply blocks
 #      Editing encrypted files (i.e. with a pipe to vi)
-#      Reading encrypted configuration files
-#      Finish moving *all* PGP/GPG interaction into wrappers
+#      A "summary" output about the reliability of all your reply blocks
 
 use strict;
 use Getopt::Long;
@@ -52,6 +50,8 @@ my %opt_def = (
 	       'dict=s'       => '/usr/share/dict/american-english',
 	       'remailers=s'  => "$ENV{'HOME'}/.remailers",
 	       'words=i'      => 5,
+	       'rlist=s'      => 'finger:rlist@mixmaster.shinn.net',
+	       'maxrlistage=i' => 2,
 	       'mailinformat=s' => 'gnus',
 	       'mailoutformat=s' => 'gnus',
 	       'debug!'       => 0,
@@ -97,17 +97,21 @@ foreach my $key (keys %opt_def)
 
 my $optsuccess = GetOptions(\%opt, keys %opt_def);
 
-if ($opt{'showopts'} or not $optsuccess or $opt{'help'})
+if ($opt{'showopts'} or not $optsuccess)
   {
     print "Command line options:\n";
-    foreach my $key (keys %opt)
+    foreach my $key (sort (keys %opt))
       {
 	print "    $key: $opt{$key}\n";
       }
     print "\n";
   }
 
-exit if $opt{'help'};
+if ($opt{'help'})
+{
+    showUsageAndExit();
+    exit;
+}
 
 unless ($optsuccess)
 {
@@ -169,8 +173,6 @@ if (@ARGV)
 }
 
 parseRemailers();
-# exit;
-
 
 
 ######################################################################
@@ -184,6 +186,12 @@ while (defined ($_ = <INFILE>))
     $block .= $_;
 }
 close INFILE;
+
+if ($opt{'config'} =~ /\.pgp$/)
+{
+    $block = pgpDoAction('action'  => 'decrypt',
+			 'message' => $block);
+}
 
 eval ($block) or exitWithError("Unable to evaluate the configuration file.");
 
@@ -260,32 +268,24 @@ if ($command eq 'decrypt' or
 
 if ($command eq 'decrypt')
 {
-    $ENV{'PGPPASSFD'} = 0;
-
     my $message = '';
     $message .= $_ while defined ($_ = <$inputfile>);
     close $inputfile;
 
     while (defined (my $current = pop @hops))
     {
-	$ENV{'PGPPASS'} = $$current{'pass'};
-	my $pid = open2( \*INPIPE, \*OUTPIPE, "pgp -f");
-	print OUTPIPE "$$current{'pass'}\n";
-	print OUTPIPE $message;
-	# Closing this handle will force PGP to process the data
-	close OUTPIPE;
-	$message = '';
-	$message .= $_ while (defined ($_ = <INPIPE>));
-	close INPIPE;
+	$message = pgpDoAction('action'  => 'decrypt',
+			       'pass'    => $$current{'pass'},
+			       'message' => $message);
     }
 
     delete $ENV{'PGPPASSFD'};
 
-    my $pid = open2( \*INPIPE, \*OUTPIPE, "pgp -f" );
-    print OUTPIPE $message;
-    close OUTPIPE;
+    $message = pgpDoAction('action'  => 'decrypt',
+			   'message' => $message);
+
     select $outputfile;
-    print while defined ($_ = <INPIPE>);
+    print $message;
     close INPIPE;
     close $outputfile;
 
@@ -305,6 +305,16 @@ if ($command eq 'create' or $command eq 'modify')
     my $next = pop @hops;
     my $message = mkHeader($next);
 
+    debug(<<__EOHD__);
+
+######################################################################
+######################################################################
+$message
+######################################################################
+######################################################################
+
+__EOHD__
+
     # Encrypt each of the reply blocks in turn
     while (defined (my $current = pop @hops))
     {
@@ -315,18 +325,31 @@ if ($command eq 'create' or $command eq 'modify')
 	}
 	debug("Building the block $$current{'addr'} -> $$next{'addr'}");
 	debug("Encrypting to $$current{'addr'}...");
-	$message = pgpDoAction($opt{'ctype'},
-			       $message,
-			       'encrypt_to',
-			       $destination);
-	$message = <<__EOHEADER__ . $message;
+	$message = pgpDoAction('message' => $message,
+			       'action'  => 'encrypt_to',
+			       'to'      => $destination,
+			       'from'    => $nym{'fprint'});
+	$message = <<__EOHEADER__;
 ::
 Encrypted: PGP
 
+$message
+**
 __EOHEADER__
 
         $message = mkHeader($current) . $message;
 	$next = $current;
+
+    debug(<<__EOHD__);
+
+######################################################################
+######################################################################
+$message
+######################################################################
+######################################################################
+
+__EOHD__
+
     }
 
     foreach $_ ($command)
@@ -341,7 +364,6 @@ Public-Key:
 $public_key
 Reply-Block:
 $message
-**
 __EOCREATEREQ__
             last;
 	};
@@ -352,7 +374,6 @@ Config:
 From: $nym{'id'}
 Reply-Block:
 $message
-**
 __EOCREATEREQ__
             last;
 	};
@@ -366,13 +387,13 @@ __EOCREATEREQ__
     # Given the final message, encrypt it to the appropriate remailer.
     # Now the creation request is all ready for mailing!
     debug("Signing and encrypting the creation request...");
-    $message = pgpDoAction($opt{'ctype'},
-			   $message,
-			   'encrypt_sign_to',
-			   $nymserver{$nym{'nymserver'}}{'config'});
+    $message = pgpDoAction('message' => $message,
+			   'action'  => 'encrypt_sign_to',
+			   'to'      => $nymserver{$nym{'nymserver'}}{'config'},
+			   'from'    => $nym{'fprint'});
 
     select $outputfile;
-    print writeMailFile('recipient' => $nymserver{$nym{'nymserver'}}{'send'},
+    print writeMailFile('recipient' => $nymserver{$nym{'nymserver'}}{'config'},
 			'message'   => $message,
 			'format'    => $opt{'mailoutformat'});
     exit;
@@ -440,13 +461,16 @@ if ($command eq 'nymcrypt')
     #### Verify that all required parts are present
 
     # Check the sender
-    if ($maildata{'alias'} eq '')
+    if ($opt{'alias'} eq '')
     {
-	exitWithError("No alias was specified or found.");
-    }
-    else
-    {
-	$opt{'alias'} = $maildata{'alias'};
+	if ($maildata{'alias'} eq '')
+	{
+	    exitWithError("No alias was specified or found.");
+	}	
+	else
+	{
+	    $opt{'alias'} = $maildata{'alias'};
+	}
     }
     unless (defined ($evblock{$opt{'alias'}}))
     {
@@ -488,7 +512,7 @@ if ($command eq 'nymcrypt')
     }
     elsif ($maildata{'groups'} ne '')
     {
-	$buffer .= "To: <some mail gateway>\n";
+	$buffer .= "To: " . resolveAddr($nym{'newsgate'}) . "\n";
 	$buffer .= "Newsgroups: $maildata{'groups'}\n";
     }
 
@@ -500,11 +524,13 @@ if ($command eq 'nymcrypt')
     $buffer .= "Subject: $maildata{'subject'}\n";
     $buffer .= "\n$maildata{'message'}";
 
+    debug("####################\n$buffer\n####################");
+
     ## Encrypt the message
-    $maildata{'message'} = pgpDoAction($opt{'ctype'},
-				       $maildata{'message'},
-				       'encrypt_sign_to',
-				       $nymserver{$nym{'nymserver'}}{'send'});
+    $maildata{'message'} = pgpDoAction('message' => $buffer,
+				       'action'  => 'encrypt_sign_to',
+				       'to'      => $nymserver{$nym{'nymserver'}}{'send'},
+				       'from'    => $nym{'fprint'});
 
     my $subject = mkRandString();
 
@@ -633,6 +659,8 @@ sub getPubKey
     my $fingerprint = shift;
     my $pk;
 
+    debug("Getting pubkey for $fingerprint");
+
     # Extract the public key for later use
     if ($opt{'ctype'} eq 'gpg')
     {
@@ -690,35 +718,69 @@ sub gpgDoAction
 ## PGP version of _do_action
 sub pgpDoAction
 {
-    my $type = shift;
-    my $message = shift;
-    my $action = shift;
-    my $target = shift;
+    my %params = @_;
     my $retval = '';
-    my $args = "-u '$nym{'fprint'}'";
+    my $pgp_syscmd;
 
-    if ($action eq 'encrypt_to')
+    if ($params{'action'} eq 'encrypt_to')
     {
-	$args .= ' +batchmode -eat';
+	$pgp_syscmd = "pgp -u '$params{'from'}' -eatf '$params{'to'}'";
     }
-    elsif ($action eq 'encrypt_sign_to')
+    elsif ($params{'action'} eq 'encrypt_sign_to')
     {
-	$args .= ' -seat';
+	$pgp_syscmd = "pgp -u '$params{'from'}' -seatf '$params{'to'}'";
+    }
+    elsif ($params{'action'} eq 'decrypt')
+    {
+	$pgp_syscmd = "pgp -f";
     }
     else
     {
-	exitWithError("Unknown pgp action: $action");
+	exitWithError("Unknown pgp action: $params{'action'}");
     }
 
-    debug("In pgpDoAction");
+    # Tell pgp to accept the password from STDIN if one is given
+    if (defined ($params{'pass'}))
+    {
+	$ENV{'PGPPASSFD'} = 0;
+    }
 
-    my $pgp_syscmd = "pgp $args -f $target";
+    if ($opt{'debug'})
+    {
+	my $out = "\n########################################\npgpDoAction:\n";
+	foreach my $key (keys %params)
+	{
+	    next if $key eq 'message';
+	    $out .= "    $key: $params{$key}\n";
+	}
+	$out .= "    Command line: $pgp_syscmd\n";
+	$out .= "Message:\nvvvvvvvvvvvvvvvvvvvv\n$params{'message'}^^^^^^^^^^^^^^^^^^^^\n";
+	$out .= "########################################\n";
+	debug($out);
+    }
+
     my $pid = open2( \*INPIPE, \*OUTPIPE, $pgp_syscmd);
-    print OUTPIPE $message;
+    if (defined ($params{'pass'}))
+    {
+	print OUTPIPE "$params{'pass'}\n";
+    }
+    if (defined ($params{'message'}))
+    {
+	print OUTPIPE $params{'message'};
+    }
     # Closing this handle will force PGP to process the data
     close OUTPIPE;
     $retval .= $_ while (defined ($_ = <INPIPE>));
     close INPIPE;
+
+    if (defined ($params{'pass'}))
+    {
+	# This can have nasty side effects, such as swallowing the
+	# first line of an input buffer, if left set
+	delete $ENV{'PGPPASSFD'};
+    }
+
+    debug("Leaving pgpDoAction");
 
     return $retval;
 }
@@ -800,6 +862,18 @@ sub parseRemailers
 {
     my $inline;
     my $index = 0;
+
+    # Fetch the user's remailers file if necessary
+    if (not -e $opt{'remailers'} or
+	 time - (stat $opt{'remailers'})[9] > $opt{'maxrlistage'} * 86400)
+    {
+	debug("Fetching remailer keys");
+	my ($method, $source) = (split /\:/, $opt{'rlist'})[0, 1];
+	if ($method eq 'finger')
+	{
+	    system "finger $source > $opt{'remailers'}";
+	}
+    }
 
     open INFILE, $opt{'remailers'} or exitWithError("Unable to read $opt{'remailers'}: $!");
     while (defined ($inline = <INFILE>))
@@ -930,13 +1004,24 @@ Options:
 
     --mailinformat
               Specify the expected file format for reading in mail
-              data.  Only 'gnus' is currently supported.  (Default:
-              $opt_def{'mailinformat=s'})
+              data.  Only 'gnus' is currently supported.  (Default: $opt_def{'mailinformat=s'})
 
     --mailoutformat
               Specify the format for writing mail messages.  data.
-              Only 'gnus' is currently supported.  (Default:
-              $opt_def{'mailinformat=s'})
+              Only 'gnus' is currently supported.  (Default: $opt_def{'mailinformat=s'})
+
+    --maxrlistage
+              The maximum acceptable age (in days) of the local remailer information file.
+              If the file is older than this value, then antonym will attempt to fetch
+              a more recent version.  (Default: $opt_def{'maxrlistage=i'})
+
+    --remailers
+              The name of the file that contains current (see --maxrlistage) information
+              about anonymous remailers.  (Default: $opt_def{'remailers=s'})
+
+    --rlist   The location (presumably on the Internet) of a remailer information
+              file, and the method used to fetch it.  The only method currently
+              supported is 'finger'.  (Default: $opt_def{'rlist=s'})
 
     --words   Length (in words) of the string generated with the "phrase" command.
               (Default: $opt_def{'words=i'})

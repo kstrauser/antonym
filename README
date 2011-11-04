@@ -82,14 +82,31 @@ TODO
 
     Encrypting a file to a remailer
     Verifying that reply blocks link to valid remailers
-    Retrieving remailer info (~/.remailers)
     Generating random reply blocks
     Editing encrypted files (i.e. with a pipe to vi)
-    Reading encrypted configuration files
-
-  Finish moving *all* PGP/GPG interaction into wrappers
 
 
 BUGS
 
   GnuPG support isn't even close to working.
+
+
+AUTHORS
+
+  Antonym was written by Kirk Strauser <kirk@strauser.com>.  It is available
+  from http://www.honeypot.net/~kirk/projects/antonym.html .
+
+
+COPYRIGHT
+
+  Copyright (C) 2002  Kirk Strauser
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms of the GNU General Public License as published by the Free
+  Software Foundation; either version 2 of the License, or (at your option)
+  any later version.
+
+  This program is distributed in the hope that it will be useful, but
+  WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+  or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+  for more details.
